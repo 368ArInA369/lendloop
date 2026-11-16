@@ -1,0 +1,255 @@
+{
+  "name": "LendLoop - Overdue reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000001",
+      "name": "Every day 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sign the bodiless GET the same way Convex expects:\n//   HMAC-SHA256(secret, \"<timestamp>.GET /overdue-loans\")\nconst crypto = require('crypto');\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nconst base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nif (!secret || !base) {\n  throw new Error('LENDLOOP_WEBHOOK_SECRET and CONVEX_SITE_URL must be set in the n8n environment');\n}\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'v1=' + crypto.createHmac('sha256', secret).update(`${timestamp}.GET /overdue-loans`).digest('hex');\nreturn [{ json: { url: `${base}/overdue-loans`, timestamp, signature } }];"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000002",
+      "name": "Sign GET request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000003",
+      "name": "Fetch overdue loans",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per overdue loan. dayKey is the idempotency scope: Convex stores at\n// most one reminder per (loanId, dayKey), so re-running today is harmless.\nconst loans = $input.first().json.loans || [];\nconst dayKey = new Date().toISOString().slice(0, 10);\nreturn loans.map((loan) => ({\n  json: {\n    loanId: loan.loanId,\n    toolName: loan.toolName,\n    dueDate: loan.dueDate,\n    daysOverdue: loan.daysOverdue,\n    borrowerName: loan.borrowerName,\n    borrowerEmail: loan.borrowerEmail,\n    dayKey,\n    channel: $env.LENDLOOP_NOTIFY_VIA === 'email' ? 'email' : 'mock',\n    subject: `Reminder: ${loan.toolName} was due ${loan.dueDate}`,\n    text: `Hi ${loan.borrowerName},\\n\\nA quick reminder that ${loan.toolName} was due back on ${loan.dueDate} (${loan.daysOverdue} day(s) ago). Please arrange the return with the owner through LendLoop.\\n\\nThanks,\\nLendLoop`,\n  },\n}));"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000004",
+      "name": "Split into loans",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "channel-check",
+              "leftValue": "={{ $json.channel }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000005",
+      "name": "Email configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_FROM_EMAIL }}",
+        "toEmail": "={{ $json.borrowerEmail }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000006",
+      "name": "Send reminder email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1100, 180],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Mock channel: log instead of sending, then treat as sent.\nconst m = $input.item.json;\nconsole.log(`[LendLoop mock reminder] to=${m.borrowerEmail} loan=${m.loanId} day=${m.dayKey}`);\nreturn { json: { ...m, status: 'sent' } };"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000007",
+      "name": "Log mock reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 460]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Email node output does not carry our fields; read them from the Split node\n// for the same item index.\nconst src = $('Split into loans').item.json;\nreturn { json: { loanId: src.loanId, dayKey: src.dayKey, status: 'sent' } };"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000008",
+      "name": "Mark sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 100]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Error output of the email node: record the failure so it is visible on the\n// loan in the app instead of disappearing into a log.\nconst src = $('Split into loans').item.json;\nconst err = $input.item.json.error;\nconst message = typeof err === 'string' ? err : (err && err.message) || 'email send failed';\nreturn { json: { loanId: src.loanId, dayKey: src.dayKey, status: 'failed', error: String(message).slice(0, 300) } };"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000009",
+      "name": "Mark failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build the raw JSON body and sign it: HMAC-SHA256(secret, \"<timestamp>.<body>\").\n// The body string is sent verbatim so the receiver hashes exactly these bytes.\nconst crypto = require('crypto');\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nconst base = ($env.CONVEX_SITE_URL || '').replace(/\\/$/, '');\nconst j = $input.item.json;\nconst body = JSON.stringify({\n  loanId: j.loanId,\n  dayKey: j.dayKey,\n  status: j.status,\n  error: j.error,\n  idempotencyKey: `reminder:${j.loanId}:${j.dayKey}`,\n});\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'v1=' + crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');\nreturn { json: { url: `${base}/reminder-status`, body, timestamp, signature } };"
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000010",
+      "name": "Sign write-back",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b2e3d4f5-0002-4000-8000-000000000011",
+      "name": "Write reminder status to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Every day 09:00": {
+      "main": [[{ "node": "Sign GET request", "type": "main", "index": 0 }]]
+    },
+    "Sign GET request": {
+      "main": [[{ "node": "Fetch overdue loans", "type": "main", "index": 0 }]]
+    },
+    "Fetch overdue loans": {
+      "main": [[{ "node": "Split into loans", "type": "main", "index": 0 }]]
+    },
+    "Split into loans": {
+      "main": [[{ "node": "Email configured?", "type": "main", "index": 0 }]]
+    },
+    "Email configured?": {
+      "main": [
+        [{ "node": "Send reminder email", "type": "main", "index": 0 }],
+        [{ "node": "Log mock reminder", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send reminder email": {
+      "main": [
+        [{ "node": "Mark sent", "type": "main", "index": 0 }],
+        [{ "node": "Mark failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log mock reminder": {
+      "main": [[{ "node": "Sign write-back", "type": "main", "index": 0 }]]
+    },
+    "Mark sent": {
+      "main": [[{ "node": "Sign write-back", "type": "main", "index": 0 }]]
+    },
+    "Mark failed": {
+      "main": [[{ "node": "Sign write-back", "type": "main", "index": 0 }]]
+    },
+    "Sign write-back": {
+      "main": [[{ "node": "Write reminder status to Convex", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Madrid",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lendloop-error-workflow"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": [{ "name": "lendloop" }]
+}

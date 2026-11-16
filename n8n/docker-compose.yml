@@ -1,0 +1,40 @@
+# Self-hosted n8n for LendLoop. Copy .env.example to .env first, then:
+#   docker compose up -d
+# UI: http://localhost:5678
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.95.3
+    container_name: lendloop-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${N8N_PUBLIC_URL:-http://localhost:5678}
+      - GENERIC_TIMEZONE=${TZ:-Europe/Madrid}
+      - TZ=${TZ:-Europe/Madrid}
+      # Encryption key for stored credentials; keep it stable or credentials become unreadable.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      # Let Code nodes read $env.* and require('crypto') for HMAC verification.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - NODE_FUNCTION_ALLOW_BUILTIN=crypto
+      # Keep execution data so failures are inspectable from the UI.
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=336
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_RUNNERS_ENABLED=true
+      # --- LendLoop integration (read by the workflows via $env) ---
+      - LENDLOOP_WEBHOOK_SECRET=${LENDLOOP_WEBHOOK_SECRET}
+      - CONVEX_SITE_URL=${CONVEX_SITE_URL}
+      - LENDLOOP_NOTIFY_VIA=${LENDLOOP_NOTIFY_VIA:-mock}
+      - LENDLOOP_FROM_EMAIL=${LENDLOOP_FROM_EMAIL:-lendloop@example.com}
+      - LENDLOOP_OPS_EMAIL=${LENDLOOP_OPS_EMAIL:-ops@example.com}
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

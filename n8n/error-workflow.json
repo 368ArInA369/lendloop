@@ -1,0 +1,113 @@
+{
+  "name": "LendLoop - Error handler",
+  "id": "lendloop-error-workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "c3f4e5a6-0003-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape the failure into one alert. Only metadata about the run is included:\n// no payload bodies, so no neighbour emails end up in the ops channel.\nconst e = $input.first().json;\nconst wf = e.workflow || {};\nconst ex = e.execution || {};\nconst lastNode = ex.lastNodeExecuted || 'unknown node';\nconst message = (ex.error && ex.error.message) || 'no error message';\n\nreturn [{\n  json: {\n    channel: $env.LENDLOOP_NOTIFY_VIA === 'email' ? 'email' : 'mock',\n    to: $env.LENDLOOP_OPS_EMAIL,\n    subject: `[LendLoop n8n] ${wf.name || 'workflow'} failed at ${lastNode}`,\n    text: [\n      `Workflow: ${wf.name || wf.id}`,\n      `Execution: ${ex.id || 'n/a'} (${ex.mode || 'unknown mode'})`,\n      `Failed node: ${lastNode}`,\n      `Error: ${message}`,\n      `Retry: ${ex.retryOf ? 'retry of ' + ex.retryOf : 'first attempt'}`,\n      ex.url ? `Open: ${ex.url}` : '',\n    ].filter(Boolean).join('\\n'),\n  },\n}];"
+      },
+      "id": "c3f4e5a6-0003-4000-8000-000000000002",
+      "name": "Format alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "channel-check",
+              "leftValue": "={{ $json.channel }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3f4e5a6-0003-4000-8000-000000000003",
+      "name": "Email configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_FROM_EMAIL }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "id": "c3f4e5a6-0003-4000-8000-000000000004",
+      "name": "Email ops",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [660, 180],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mock channel: the error stays visible as a failed execution plus this log line.\nconst a = $input.first().json;\nconsole.error(`[LendLoop n8n ALERT] ${a.subject}\\n${a.text}`);\nreturn [{ json: { alerted: 'mock', subject: a.subject } }];"
+      },
+      "id": "c3f4e5a6-0003-4000-8000-000000000005",
+      "name": "Log alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 420]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Format alert", "type": "main", "index": 0 }]]
+    },
+    "Format alert": {
+      "main": [[{ "node": "Email configured?", "type": "main", "index": 0 }]]
+    },
+    "Email configured?": {
+      "main": [
+        [{ "node": "Email ops", "type": "main", "index": 0 }],
+        [{ "node": "Log alert", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": [{ "name": "lendloop" }]
+}

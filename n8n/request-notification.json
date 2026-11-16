@@ -1,0 +1,204 @@
+{
+  "name": "LendLoop - Request notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop-request",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000001",
+      "name": "Convex webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "lendloop-request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the HMAC-SHA256 signature Convex put on the request.\n// Signed string: \"<timestamp>.<raw body>\" (see convex/lib/signing.ts).\nconst crypto = require('crypto');\n\nconst secret = $env.LENDLOOP_WEBHOOK_SECRET;\nif (!secret) {\n  throw new Error('LENDLOOP_WEBHOOK_SECRET is not set in the n8n environment');\n}\n\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst timestamp = headers['x-lendloop-timestamp'];\nconst signature = headers['x-lendloop-signature'];\n\n// rawBody: true puts the untouched bytes in binary.data; fall back to re-serialising.\nconst raw = item.binary && item.binary.data\n  ? Buffer.from(item.binary.data.data, 'base64').toString('utf8')\n  : JSON.stringify(item.json.body);\n\nlet reason = null;\nif (!timestamp || !signature) {\n  reason = 'missing signature headers';\n} else if (Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp)) > 300) {\n  reason = 'timestamp outside 5 minute window';\n} else {\n  const expected = 'v1=' + crypto.createHmac('sha256', secret).update(`${timestamp}.${raw}`).digest('hex');\n  const a = Buffer.from(String(signature));\n  const b = Buffer.from(expected);\n  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n    reason = 'signature mismatch';\n  }\n}\n\nlet payload = null;\nif (!reason) {\n  try {\n    payload = JSON.parse(raw);\n  } catch (e) {\n    reason = 'body is not valid JSON';\n  }\n}\n\nreturn [{ json: { valid: reason === null, reason, payload } }];"
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000002",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "valid-check",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000003",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the event into one human message. Only the fields in the payload are\n// used; no lookups against other systems.\nconst p = $input.first().json.payload;\n\nconst templates = {\n  request_created: {\n    subject: `New borrow request for your ${p.toolName}`,\n    text: `${p.counterpartName} would like to borrow your ${p.toolName} from ${p.startDate} to ${p.endDate}. Open LendLoop > Incoming to approve or decline.`,\n  },\n  request_approved: {\n    subject: `Your request for ${p.toolName} was approved`,\n    text: `${p.counterpartName} approved your request for ${p.toolName} (${p.startDate} to ${p.endDate}). Please return it by ${p.endDate}.`,\n  },\n  request_declined: {\n    subject: `Your request for ${p.toolName} was declined`,\n    text: `${p.counterpartName} could not lend ${p.toolName} this time. The board has other options.`,\n  },\n  request_cancelled: {\n    subject: `Request for ${p.toolName} cancelled`,\n    text: `${p.counterpartName} cancelled the request for your ${p.toolName} (${p.startDate} to ${p.endDate}).`,\n  },\n  loan_returned: {\n    subject: `${p.toolName} marked as returned`,\n    text: `${p.counterpartName} confirmed ${p.toolName} is back. Thanks for returning it!`,\n  },\n};\n\nconst t = templates[p.event] || {\n  subject: `LendLoop update for ${p.toolName}`,\n  text: `The request for ${p.toolName} is now \"${p.status}\".`,\n};\n\nreturn [{\n  json: {\n    event: p.event,\n    loanId: p.loanId,\n    idempotencyKey: p.idempotencyKey,\n    to: p.recipient.email,\n    toName: p.recipient.name,\n    subject: t.subject,\n    text: `Hi ${p.recipient.name},\\n\\n${t.text}\\n\\n- LendLoop`,\n    channel: $env.LENDLOOP_NOTIFY_VIA === 'email' ? 'email' : 'mock',\n  },\n}];"
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000004",
+      "name": "Compose message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "channel-check",
+              "leftValue": "={{ $json.channel }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000005",
+      "name": "Email configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_FROM_EMAIL }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {}
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000006",
+      "name": "Send email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1100, 100],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_AFTER_IMPORT",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mock channel: the \"notification\" is the execution log itself.\n// Visible under Executions in n8n, which is enough for a review setup.\nconst m = $input.first().json;\nconsole.log(`[LendLoop mock notification] to=${m.to} subject=\"${m.subject}\" key=${m.idempotencyKey}`);\nreturn [{ json: { delivered: 'mock', to: m.to, subject: m.subject, text: m.text, idempotencyKey: m.idempotencyKey } }];"
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000007",
+      "name": "Log mock notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 320]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000008",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'unauthorized' }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "a1f2c3d4-0001-4000-8000-000000000009",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 480]
+    }
+  ],
+  "connections": {
+    "Convex webhook": {
+      "main": [[{ "node": "Verify signature", "type": "main", "index": 0 }]]
+    },
+    "Verify signature": {
+      "main": [[{ "node": "Signature valid?", "type": "main", "index": 0 }]]
+    },
+    "Signature valid?": {
+      "main": [
+        [{ "node": "Compose message", "type": "main", "index": 0 }],
+        [{ "node": "Respond 401", "type": "main", "index": 0 }]
+      ]
+    },
+    "Compose message": {
+      "main": [[{ "node": "Email configured?", "type": "main", "index": 0 }]]
+    },
+    "Email configured?": {
+      "main": [
+        [{ "node": "Send email", "type": "main", "index": 0 }],
+        [{ "node": "Log mock notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send email": {
+      "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]]
+    },
+    "Log mock notification": {
+      "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "lendloop-error-workflow"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "tags": [{ "name": "lendloop" }]
+}
